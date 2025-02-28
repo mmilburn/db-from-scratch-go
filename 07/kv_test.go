@@ -83,8 +83,9 @@ func (d *D) dump() ([]string, []string) {
 }
 
 func (d *D) verify(t *testing.T) {
+	// KV data
 	keys, vals := d.dump()
-
+	// reference data
 	rkeys, rvals := []string{}, []string{}
 	for k, v := range d.ref {
 		rkeys = append(rkeys, k)
@@ -100,10 +101,15 @@ func (d *D) verify(t *testing.T) {
 			rkeys[j], rvals[j] = k, v
 		},
 	})
-
+	// compare with the reference
 	is.Equal(t, rkeys, keys)
 	is.Equal(t, rvals, vals)
 
+	// track visited pages
+	pages := make([]uint8, d.db.page.flushed)
+	pages[0] = 1
+	pages[d.db.tree.root] = 1
+	// verify node structures
 	var nodeVerify func(BNode)
 	nodeVerify = func(node BNode) {
 		nkeys := node.nkeys()
@@ -112,13 +118,31 @@ func (d *D) verify(t *testing.T) {
 			return
 		}
 		for i := uint16(0); i < nkeys; i++ {
+			ptr := node.getPtr(i)
+			is.Zero(t, pages[ptr])
+			pages[ptr] = 1 // tree node
 			key := node.getKey(i)
 			kid := BNode(d.db.tree.get(node.getPtr(i)))
 			is.Equal(t, key, kid.getKey(0))
 			nodeVerify(kid)
 		}
 	}
+
 	nodeVerify(d.db.tree.get(d.db.tree.root))
+
+	// free list
+	list, nodes := flDump(&d.db.free)
+	for _, ptr := range nodes {
+		is.Zero(t, pages[ptr])
+		pages[ptr] = 2 // free list node
+	}
+	for _, ptr := range list {
+		is.Zero(t, pages[ptr])
+		pages[ptr] = 3 // free list content
+	}
+	for _, flag := range pages {
+		is.NotZero(t, flag) // every page is accounted for
+	}
 }
 
 func funcTestKVBasic(t *testing.T, reopen bool) {
@@ -290,4 +314,40 @@ func TestKVIncLength(t *testing.T) {
 		c.verify(t)
 		c.dispose()
 	}
+}
+
+func fileSize(path string) int64 {
+	finfo, err := os.Stat(path)
+	assert(err == nil)
+	return finfo.Size()
+}
+
+// test the free list: file size do not increase under various operations
+func TestKVFileSize(t *testing.T) {
+	c := newD()
+	fill := func(seed int) {
+		for i := 0; i < 2000; i++ {
+			key := fmt.Sprintf("key%d", fmix32(uint32(i)))
+			val := fmt.Sprintf("vvv%010d", fmix32(uint32(seed*2000+i)))
+			c.add(key, val)
+		}
+	}
+	fill(0)
+	fill(1)
+	size := fileSize(c.db.Path)
+
+	// update the same key
+	fill(2)
+	assert(size == fileSize(c.db.Path))
+
+	// remove everything
+	for i := 0; i < 2000; i++ {
+		key := fmt.Sprintf("key%d", fmix32(uint32(i)))
+		c.del(key)
+	}
+	assert(size == fileSize(c.db.Path))
+
+	// add them back
+	fill(3)
+	assert(size == fileSize(c.db.Path))
 }

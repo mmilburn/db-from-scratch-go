@@ -325,6 +325,7 @@ func fileSize(path string) int64 {
 // test the free list: file size do not increase under various operations
 func TestKVFileSize(t *testing.T) {
 	c := newD()
+	defer c.dispose()
 	fill := func(seed int) {
 		for i := 0; i < 2000; i++ {
 			key := fmt.Sprintf("key%d", fmix32(uint32(i)))
